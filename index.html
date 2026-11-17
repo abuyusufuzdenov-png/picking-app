@@ -59,9 +59,9 @@ td strong,td small{display:block}
 </head>
 <body>
 <main>
-  <header><h1>Сборочное задание</h1><span class="market">WILDBERRIES</span></header>
+  <header><h1>Сборочное задание</h1><select id="market" aria-label="Маркетплейс"><option value="WB">Wildberries</option><option value="Ozon">Ozon</option></select></header>
   <section>
-    <h2>Лист подбора WB</h2>
+    <h2 id="sheet-title">Лист подбора WB</h2><p class="muted">Названия цветов сохраняются по артикулу в этом браузере.</p><p id="storage-status" role="status"></p>
     <div class="actions">
       <input id="picking-file" type="file" accept=".pdf,application/pdf" aria-label="PDF листа подбора WB">
       <button id="print" class="primary" disabled>Печать А5</button>
@@ -74,7 +74,7 @@ td strong,td small{display:block}
       </table>
     </div>
   </section>
-  <section>
+  <section id="stickers-section">
     <h2>Стикеры WB</h2>
     <fieldset id="label-options" disabled>
       <div class="actions">
@@ -158,6 +158,47 @@ async function parsePicking(document) {
   return { supply, date, total, groups: [...groups.values()] };
 }
 
+async function parseOzon(document) {
+  const groups = [];
+  const seen = new Set();
+  let date = "", shipments = 0;
+  for (let page = 1; page <= document.numPages; page++) {
+    const words = await items(document, page);
+    const text = words.map(word => word.text).join(" ");
+    if (page === 1) {
+      if (!text.includes("Ozon")) throw new Error("Выбери сборочное задание Ozon.");
+      date = text.match(/Дата:\s*(\d{2}\.\d{2}\.\d{4})/)?.[1] ?? "";
+      shipments = Number(text.match(/Количество отправлений:\s*(\d+)/)?.[1] ?? 0);
+    }
+    const product = words.find(word => word.text === "Товар");
+    const article = words.find(word => word.text === "Артикул");
+    const quantity = words.find(word => word.text === "Кол-во");
+    if (!product || !article || !quantity) throw new Error("Не прочитаны колонки Ozon на странице " + page);
+    const rows = words.filter(word => word.y < article.y && word.x >= article.x - 1 &&
+      word.x < quantity.x - 1).sort((a,b) => b.y-a.y);
+    for (let i = 0; i < rows.length; i++) {
+      const sku = rows[i].text;
+      const bottom = rows[i+1]?.y ?? -Infinity;
+      const row = words.filter(word => word.y <= rows[i].y + 3 && word.y > bottom + 3);
+      const title = row.filter(word => word.x >= product.x - 1 && word.x < article.x - 1)
+        .sort((a,b) => b.y-a.y || a.x-b.x).map(word=>word.text).join(" ");
+      const amounts = row.filter(word => word.x >= quantity.x - 1);
+      const count = amounts.length === 1 ? Number(amounts[0].text) : NaN;
+      if (!title || !Number.isInteger(count) || count <= 0 || seen.has(sku)) {
+        throw new Error("Проверь строку Ozon с артикулом " + sku);
+      }
+      seen.add(sku);
+      const suffix = sku.toLowerCase().match(/([a-z]+)(?:_[0-9-]+)?$/)?.[1];
+      const model = models.get(suffix) ?? title;
+      groups.push({model, sku, originalColor:"", color:"", size:sku.match(/_(\d+-\d+)$/)?.[1] ?? "—", count, codes:[]});
+    }
+  }
+  if (!groups.length) throw new Error("В задании Ozon не найдены товары.");
+  return {supply:"Ozon", date, shipments, total:groups.reduce((sum,g)=>sum+g.count,0), groups};
+}
+
+function quantity(group) { return group.count ?? group.codes.length; }
+
 const modelOrder = new Map([...models.values()].map((model, index) => [model, index]));
 
 function compareGroups(a, b) {
@@ -171,8 +212,9 @@ function orderedGroups(groups) {
   for (const group of groups) {
     const color = normalize(group.color);
     const key = JSON.stringify([group.model, group.sku, color.toLocaleLowerCase("ru"), group.size]);
-    if (!merged.has(key)) merged.set(key, { ...group, color, codes: [] });
+    if (!merged.has(key)) merged.set(key, { ...group, color, count: 0, codes: [] });
     merged.get(key).codes.push(...group.codes);
+    merged.get(key).count += quantity(group);
   }
   return [...merged.values()].sort(compareGroups).map(group =>
       ({ ...group, codes: group.codes.sort() }));
@@ -250,6 +292,25 @@ async function assembleLabels(PDFDocument, bytes, groups, separators) {
 }
 
 const byId = id => document.getElementById(id);
+const market = byId("market");
+let savedColors = {};
+try {
+  const value = JSON.parse(localStorage.getItem("picking-colors-v1") || "{}");
+  if (value && typeof value === "object" && !Array.isArray(value)) savedColors = value;
+} catch {
+  byId("storage-status").textContent = "Не удалось прочитать сохранённые цвета.";
+}
+market.addEventListener("change", () => {
+  picking = null;
+  pickingFile.value = "";
+  labelFile.value = "";
+  preview.hidden = true;
+  byId("sheet-title").textContent = "Лист подбора " + market.value;
+  byId("stickers-section").hidden = market.value !== "WB";
+  message(pickingStatus, "");
+  clearDownload();
+  controls();
+});
 const pickingFile = byId("picking-file");
 const labelFile = byId("label-file");
 const pickingStatus = byId("picking-status");
@@ -300,6 +361,7 @@ function clearDownload() {
 function controls() {
   const valid = picking && picking.groups.every(group => normalize(group.color));
   pickingFile.disabled = busy;
+  market.disabled = busy;
   printButton.disabled = !valid || busy;
   labelOptions.disabled = !picking || busy;
   sortButton.disabled = !valid || !labelFile.files.length || busy;
@@ -344,15 +406,28 @@ function renderPreview() {
     input.required = true;
     input.maxLength = 100;
     input.value = group.color;
+    input.dataset.sku = group.sku;
     input.setAttribute("aria-label", "Цвет для печати: " + group.sku + ", " + group.originalColor + ", " + group.size);
     input.addEventListener("input", () => {
-      group.color = input.value;
+      for (const related of picking.groups.filter(row => row.sku === group.sku)) related.color = input.value;
+      for (const other of preview.querySelectorAll("input")) {
+        if (other.dataset.sku === group.sku) other.value = input.value;
+      }
+      const color = normalize(input.value);
+      if (color) savedColors[group.sku] = color;
+      else delete savedColors[group.sku];
+      try {
+        localStorage.setItem("picking-colors-v1", JSON.stringify(savedColors));
+        byId("storage-status").textContent = "";
+      } catch {
+        byId("storage-status").textContent = "Браузер не разрешил сохранить цвета. Они действуют только до закрытия страницы.";
+      }
       invalidateLabels();
       pickingSummary();
       controls();
     });
     color.append(input);
-    row.append(product, color, element("td", group.size), element("td", String(group.codes.length)));
+    row.append(product, color, element("td", group.size), element("td", String(quantity(group))));
     table.append(row);
   }
   preview.hidden = false;
@@ -391,7 +466,10 @@ pickingFile.addEventListener("change", async () => {
   let source;
   try {
     source = await openPdf(file);
-    picking = await parsePicking(source.document);
+    picking = await (market.value === "WB" ? parsePicking(source.document) : parseOzon(source.document));
+    for (const group of picking.groups) {
+      if (Object.hasOwn(savedColors, group.sku) && typeof savedColors[group.sku] === "string") group.color = savedColors[group.sku];
+    }
     renderPreview();
     invalidateLabels();
   } catch (error) {
@@ -447,16 +525,17 @@ printButton.addEventListener("click", () => {
     const row = element("tr");
     const product = element("td");
     product.append(element("strong", group.model), element("small", group.sku));
-    row.append(product, element("td", group.color), element("td", group.size), element("td", String(group.codes.length)));
+    row.append(product, element("td", group.color), element("td", group.size), element("td", String(quantity(group))));
     const codesRow = element("tr");
     const codesCell = element("td");
     codesCell.colSpan = 4;
     codesCell.append(stickerNumbers(group.codes));
     codesRow.append(codesCell);
-    body.append(row, codesRow);
+    body.append(row);
+    if (group.codes.length) body.append(codesRow);
     table.append(body);
   }
-  sheet.replaceChildren(element("h1", "Лист подбора WB"),
+  sheet.replaceChildren(element("h1", "Лист подбора " + market.value),
     element("p", [picking.supply, picking.date, "Всего " + picking.total + " шт."].filter(Boolean).join(" · ")), table);
   window.print();
 });
