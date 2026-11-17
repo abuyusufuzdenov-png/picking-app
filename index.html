@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111111">
+<title>Сборочное задание</title>
+<style>
+:root{--bg:#f3f3f3;--panel:#fff;--ink:#111;--muted:#626262;--line:#ddd;--ok:#17633e;--err:#a72920;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#0c0c0c;--panel:#171717;--ink:#f2f2f2;--muted:#aaa;--line:#383838;--ok:#80d9a7;--err:#ff9288;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "IBM Plex Sans","Segoe UI",Arial,sans-serif}
+main{max-width:1120px;margin:auto;padding:26px 16px;display:grid;gap:14px}
+header,.actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;margin:0}
+h2{font-size:18px;margin:0 0 12px}
+.market,.muted,small{color:var(--muted)}
+.market{font-weight:700;letter-spacing:.1em}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+fieldset{border:0;padding:0;margin:0;min-width:0}
+button,.button,input[type=file]::file-selector-button,input[type=text]{font:inherit;border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--panel);color:var(--ink)}
+button,.button,input[type=file]::file-selector-button{cursor:pointer;font-weight:600}
+button.primary,.button{background:var(--ink);color:var(--panel);border-color:var(--ink);text-decoration:none}
+button:disabled{opacity:.45;cursor:default}
+input[type=file]{font:inherit;max-width:100%}
+input[type=text]{width:100%;min-width:110px}
+input[type=text]:invalid{border-color:var(--err)}
+input[type=checkbox]{accent-color:var(--ink)}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.status{min-height:1.45em;margin:8px 0 0;overflow-wrap:anywhere}
+.status[data-kind=ok]{color:var(--ok)}
+.status[data-kind=error]{color:var(--err)}
+.scroll{overflow:auto}
+table{width:100%;border-collapse:collapse}
+th,td{padding:9px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{background:var(--bg);white-space:nowrap;font-size:13px}
+td:last-child,th:last-child{text-align:center}
+td strong,td small{display:block}
+.numbers{display:flex;gap:4px 12px;flex-wrap:wrap;margin-top:4px;color:var(--muted);font:12px ui-monospace,Consolas,monospace}
+.numbers span{white-space:nowrap}
+.numbers b{color:var(--ink)}
+[hidden]{display:none!important}
+#print-sheet{display:none}
+@page{size:A5 portrait;margin:9mm}
+@media print{
+  :root{--line:#aaa;--ink:#111;--muted:#555;--bg:#eee;color-scheme:light}
+  body{background:white;color:#111;font-size:9pt}
+  main{display:none}
+  #print-sheet{display:block}
+  #print-sheet h1{font-size:17pt}
+  #print-sheet p{margin:2mm 0 4mm}
+  #print-sheet th,#print-sheet td{padding:1.5mm;border:1px solid var(--line)}
+  #print-sheet .numbers{font-size:7pt;gap:1mm 2.5mm}
+  #print-sheet tbody{break-inside:avoid}
+  #print-sheet thead{display:table-header-group}
+  #print-sheet small{font-size:8pt}
+}
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Сборочное задание</h1><span class="market">WILDBERRIES</span></header>
+  <section>
+    <h2>Лист подбора WB</h2>
+    <div class="actions">
+      <input id="picking-file" type="file" accept=".pdf,application/pdf" aria-label="PDF листа подбора WB">
+      <button id="print" class="primary" disabled>Печать А5</button>
+    </div>
+    <p class="status" id="picking-status" role="status"></p>
+    <div class="scroll" id="preview" hidden>
+      <table>
+        <thead><tr><th>Модель / артикул / стикеры</th><th>Цвет для печати</th><th>Размер</th><th>Шт.</th></tr></thead>
+        <tbody id="picking-rows"></tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Стикеры WB</h2>
+    <fieldset id="label-options" disabled>
+      <div class="actions">
+        <input id="label-file" type="file" accept=".pdf,application/pdf" aria-label="PDF стикеров WB">
+        <label><input id="separators" type="checkbox" checked> Разделители по товарам</label>
+        <button class="primary" id="sort" disabled>Сортировать стикеры</button>
+      </div>
+    </fieldset>
+    <p class="status" id="label-status" role="status">Сначала загрузи лист подбора.</p>
+    <a class="button" id="download" hidden>Скачать PDF стикеров</a>
+  </section>
+</main>
+<div id="print-sheet"></div>
+<script type="module">
+const models = new Map([
+  ["carolina", "Платье Каролина"],
+  ["sardinia", "Сардиния"],
+  ["beanieb", "Бини без отворота"],
+]);
+const columns = ["Наименование", "Размер", "Цвет", "Артикул продавца", "Стикер"];
+const collator = new Intl.Collator("ru", { numeric: true, sensitivity: "base" });
+const sizes = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"];
+const normalize = text => text.trim().replace(/\s+/g, " ");
+const compareSize = (a, b) => sizes.includes(a) && sizes.includes(b)
+  ? sizes.indexOf(a) - sizes.indexOf(b) : collator.compare(a, b);
+const formatCode = code => code.slice(0, 7) + " " + code.slice(7);
+
+async function items(document, page) {
+  const content = await (await document.getPage(page)).getTextContent();
+  return content.items.filter(item => item.str?.trim()).map(item => ({
+    text: normalize(item.str), x: item.transform[4], y: item.transform[5],
+  }));
+}
+
+async function parsePicking(document) {
+  const groups = new Map();
+  const codes = new Set();
+  const jobs = new Set();
+  let supply, total, date;
+  for (let page = 1; page <= document.numPages; page++) {
+    const words = await items(document, page);
+    if (page === 1) {
+      const text = words.map(word => word.text).join(" ");
+      supply = text.match(/Лист подбора\s+(WB-[\w-]+)/)?.[1];
+      total = Number(text.match(/Количество товаров:\s*(\d+)/)?.[1]);
+      date = text.match(/Дата:\s*(\d{2}\.\d{2}\.\d{4})/)?.[1] ?? "";
+      if (!supply || !total) throw new Error("Выбери исходный «Лист подбора» из кабинета WB.");
+    }
+    const header = words.find(word => word.text === "№ задания");
+    const edges = columns.map(name => words.find(word => word.text === name &&
+      header && Math.abs(word.y - header.y) < 2)?.x - 0.5);
+    if (!header || edges.some((edge, i) => !Number.isFinite(edge) || (i && edge <= edges[i - 1]))) {
+      throw new Error("Не удалось прочитать заголовки таблицы на странице " + page + ".");
+    }
+    const rows = words.filter(word => Math.abs(word.x - header.x) < 2 &&
+      word.y < header.y && /^\d{7,}$/.test(word.text)).sort((a, b) => b.y - a.y);
+    rows.forEach((job, i) => {
+      const bottom = rows[i + 1]?.y ?? -Infinity;
+      const row = words.filter(word => word.y <= job.y + 3 && word.y > bottom + 3)
+        .sort((a, b) => b.y - a.y || a.x - b.x);
+      const fields = edges.map((start, col) => row.filter(word =>
+        word.x >= start && word.x < (edges[col + 1] ?? Infinity)).map(word => word.text).join(" "));
+      const [title, rawSize, originalColor, sku, rawCode] = fields;
+      const size = rawSize.toUpperCase().replace(/[ХМС]/g, char => ({Х:"X", М:"M", С:"C"})[char]);
+      const code = rawCode.replace(/\s/g, "");
+      if (!title || !size || !originalColor || !sku || !/^\d{11}$/.test(code)) {
+        throw new Error("Неполная строка задания " + job.text + ".");
+      }
+      if (codes.has(code) || jobs.has(job.text)) {
+        throw new Error("Повтор в листе подбора: " + formatCode(code) + ".");
+      }
+      codes.add(code);
+      jobs.add(job.text);
+      const model = models.get(sku.toLowerCase().match(/[a-z]+$/)?.[0]) ?? title;
+      const key = JSON.stringify([model, sku, originalColor, size]);
+      if (!groups.has(key)) groups.set(key, { model, sku, originalColor, color: originalColor, size, codes: [] });
+      groups.get(key).codes.push(code);
+    });
+  }
+  if (codes.size !== total) throw new Error("WB указал " + total + " шт., прочитано " + codes.size + ".");
+  return { supply, date, total, groups: [...groups.values()] };
+}
+
+const modelOrder = new Map([...models.values()].map((model, index) => [model, index]));
+
+function compareGroups(a, b) {
+  return (modelOrder.get(a.model) ?? models.size) - (modelOrder.get(b.model) ?? models.size) ||
+    collator.compare(a.model, b.model) || collator.compare(a.color, b.color) ||
+    compareSize(a.size, b.size) || collator.compare(a.sku, b.sku);
+}
+
+function orderedGroups(groups) {
+  const merged = new Map();
+  for (const group of groups) {
+    const color = normalize(group.color);
+    const key = JSON.stringify([group.model, group.sku, color.toLocaleLowerCase("ru"), group.size]);
+    if (!merged.has(key)) merged.set(key, { ...group, color, codes: [] });
+    merged.get(key).codes.push(...group.codes);
+  }
+  return [...merged.values()].sort(compareGroups).map(group =>
+      ({ ...group, codes: group.codes.sort() }));
+}
+
+async function matchLabels(document, groups) {
+  const codes = new Set(groups.flatMap(group => group.codes));
+  const pages = new Map();
+  const duplicates = new Set();
+  const extras = [];
+  for (let page = 1; page <= document.numPages; page++) {
+    const text = (await items(document, page)).map(word => word.text).join(" ");
+    const matches = [...text.matchAll(/(?<!\d)(\d{7})\s*(\d{4})(?!\d)/g)]
+      .map(match => match[1] + match[2]);
+    if (matches.length !== 1 || !codes.has(matches[0])) {
+      extras.push(page);
+    } else if (pages.has(matches[0])) {
+      duplicates.add(matches[0]);
+    } else {
+      pages.set(matches[0], page - 1);
+    }
+  }
+  const missing = [...codes].filter(code => !pages.has(code));
+  const summarize = (list, format = String) => list.slice(0, 4).map(format).join(", ") +
+    (list.length > 4 ? "…" : "");
+  const problems = [];
+  if (missing.length) problems.push("нет " + missing.length + " шт. (" + summarize(missing, formatCode) + ")");
+  if (duplicates.size) problems.push("повторы (" + summarize([...duplicates], formatCode) + ")");
+  if (extras.length) problems.push("лишние или нечитаемые страницы (" + summarize(extras) + ")");
+  if (problems.length) throw new Error("Стикеры не совпали с заданием: " + problems.join("; ") + ".");
+  return groups.map(group => ({...group, pages: group.codes.map(code => pages.get(code))}));
+}
+
+function separatorImage(group, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * 5);
+  canvas.height = Math.round(height * 5);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(5, 5);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, width, 5);
+  function line(text, y, preferredSize, weight) {
+    let size = preferredSize;
+    ctx.font = weight + " " + size + "px sans-serif";
+    while (size > 5 && ctx.measureText(text).width > width - 14) {
+      size -= 0.5;
+      ctx.font = weight + " " + size + "px sans-serif";
+    }
+    ctx.fillText(text, 7, y, width - 14);
+  }
+  line(group.model, height * 0.26, height * 0.145, 700);
+  line(group.color, height * 0.45, height * 0.13, 400);
+  line(group.sku, height * 0.62, height * 0.09, 400);
+  line(group.size + "   ·   " + group.codes.length + " шт.", height * 0.88, height * 0.185, 700);
+  return canvas.toDataURL("image/png");
+}
+
+async function assembleLabels(PDFDocument, bytes, groups, separators) {
+  const source = await PDFDocument.load(bytes);
+  const output = await PDFDocument.create();
+  const originals = await output.copyPages(source, groups.flatMap(group => group.pages));
+  let cursor = 0;
+  for (const group of groups) {
+    if (separators) {
+      const { width, height } = originals[cursor].getSize();
+      const page = output.addPage([width, height]);
+      const png = await output.embedPng(separators(group, width, height));
+      page.drawImage(png, { x: 0, y: 0, width, height });
+    }
+    for (const _ of group.pages) output.addPage(originals[cursor++]);
+  }
+  return output.save();
+}
+
+const byId = id => document.getElementById(id);
+const pickingFile = byId("picking-file");
+const labelFile = byId("label-file");
+const pickingStatus = byId("picking-status");
+const labelStatus = byId("label-status");
+const labelOptions = byId("label-options");
+const sortButton = byId("sort");
+const printButton = byId("print");
+const preview = byId("preview");
+const download = byId("download");
+const separators = byId("separators");
+let picking = null;
+let busy = false;
+let downloadUrl;
+let pdfjsPromise;
+let pdfLibPromise;
+
+function pdfjs() {
+  if (!pdfjsPromise) {
+    const base = "https://cdn.jsdelivr.net/npm/pdfjs-dist@5.6.205/build/";
+    pdfjsPromise = import(base + "pdf.mjs").then(module => {
+      module.GlobalWorkerOptions.workerSrc = base + "pdf.worker.mjs";
+      return module;
+    }).catch(error => { pdfjsPromise = null; throw error; });
+  }
+  return pdfjsPromise;
+}
+
+function pdfLib() {
+  if (!pdfLibPromise) {
+    pdfLibPromise = import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm")
+      .catch(error => { pdfLibPromise = null; throw error; });
+  }
+  return pdfLibPromise;
+}
+
+function message(element, text, kind = "") {
+  element.textContent = text;
+  element.dataset.kind = kind;
+}
+
+function clearDownload() {
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = undefined;
+  download.removeAttribute("href");
+  download.hidden = true;
+}
+
+function controls() {
+  const valid = picking && picking.groups.every(group => normalize(group.color));
+  pickingFile.disabled = busy;
+  printButton.disabled = !valid || busy;
+  labelOptions.disabled = !picking || busy;
+  sortButton.disabled = !valid || !labelFile.files.length || busy;
+  for (const input of preview.querySelectorAll("input")) input.disabled = busy;
+}
+
+function element(tag, content) {
+  const node = document.createElement(tag);
+  if (content !== undefined) node.textContent = content;
+  return node;
+}
+
+function stickerNumbers(codes) {
+  const node = element("div");
+  node.className = "numbers";
+  for (const code of [...codes].sort()) {
+    const number = element("span", code.slice(0, 7) + " ");
+    number.append(element("b", code.slice(7)));
+    node.append(number);
+  }
+  return node;
+}
+
+function pickingSummary() {
+  const valid = picking.groups.every(group => normalize(group.color));
+  const groups = orderedGroups(picking.groups);
+  message(pickingStatus, picking.supply + " · " + picking.total + " шт. · " +
+    groups.length + " строк к печати" + (valid ? "" : " · заполни название цвета."),
+    valid ? "ok" : "error");
+}
+
+function renderPreview() {
+  const table = byId("picking-rows");
+  table.replaceChildren();
+  for (const group of [...picking.groups].sort(compareGroups)) {
+    const row = element("tr");
+    const product = element("td");
+    product.append(element("strong", group.model), element("small", group.sku), stickerNumbers(group.codes));
+    const color = element("td");
+    const input = element("input");
+    input.type = "text";
+    input.required = true;
+    input.maxLength = 100;
+    input.value = group.color;
+    input.setAttribute("aria-label", "Цвет для печати: " + group.sku + ", " + group.originalColor + ", " + group.size);
+    input.addEventListener("input", () => {
+      group.color = input.value;
+      invalidateLabels();
+      pickingSummary();
+      controls();
+    });
+    color.append(input);
+    row.append(product, color, element("td", group.size), element("td", String(group.codes.length)));
+    table.append(row);
+  }
+  preview.hidden = false;
+  pickingSummary();
+}
+
+function invalidateLabels() {
+  clearDownload();
+  message(labelStatus, labelFile.files.length ? "Файл выбран. Нажми «Сортировать стикеры»." :
+    "Выбери исходный PDF со стикерами из кабинета WB.");
+}
+
+async function openPdf(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const module = await pdfjs();
+  const task = module.getDocument({ data: bytes.slice(), isEvalSupported: false });
+  try {
+    return { bytes, document: await task.promise };
+  } catch (error) {
+    await task.destroy();
+    throw error;
+  }
+}
+
+pickingFile.addEventListener("change", async () => {
+  const file = pickingFile.files[0];
+  if (!file) return;
+  picking = null;
+  labelFile.value = "";
+  preview.hidden = true;
+  clearDownload();
+  busy = true;
+  controls();
+  message(pickingStatus, "Читаем лист подбора…");
+  message(labelStatus, "Сначала загрузи лист подбора.");
+  let source;
+  try {
+    source = await openPdf(file);
+    picking = await parsePicking(source.document);
+    renderPreview();
+    invalidateLabels();
+  } catch (error) {
+    message(pickingStatus, error.message, "error");
+  } finally {
+    if (source) await source.document.destroy();
+    busy = false;
+    controls();
+  }
+});
+
+labelFile.addEventListener("change", () => { invalidateLabels(); controls(); });
+separators.addEventListener("change", invalidateLabels);
+sortButton.addEventListener("click", async () => {
+  const file = labelFile.files[0];
+  const groups = orderedGroups(picking.groups);
+  clearDownload();
+  busy = true;
+  controls();
+  message(labelStatus, "Сверяем номера стикеров с листом…");
+  let source;
+  try {
+    source = await openPdf(file);
+    const matches = await matchLabels(source.document, groups);
+    const { PDFDocument } = await pdfLib();
+    const result = await assembleLabels(PDFDocument, source.bytes, matches,
+      separators.checked ? separatorImage : null);
+    downloadUrl = URL.createObjectURL(new Blob([result], { type: "application/pdf" }));
+    download.href = downloadUrl;
+    download.download = "Стикеры_" + picking.supply + "_по-порядку.pdf";
+    download.hidden = false;
+    message(labelStatus, picking.total + " стикеров сверены и отсортированы" +
+      (separators.checked ? " · разделителей: " + groups.length : "") + ".", "ok");
+  } catch (error) {
+    message(labelStatus, error.message, "error");
+  } finally {
+    if (source) await source.document.destroy();
+    busy = false;
+    controls();
+  }
+});
+
+printButton.addEventListener("click", () => {
+  const sheet = byId("print-sheet");
+  const table = element("table");
+  const header = element("thead");
+  const headings = element("tr");
+  for (const name of ["Модель / артикул", "Цвет", "Размер", "Шт."]) headings.append(element("th", name));
+  header.append(headings);
+  table.append(header);
+  for (const group of orderedGroups(picking.groups)) {
+    const body = element("tbody");
+    const row = element("tr");
+    const product = element("td");
+    product.append(element("strong", group.model), element("small", group.sku));
+    row.append(product, element("td", group.color), element("td", group.size), element("td", String(group.codes.length)));
+    const codesRow = element("tr");
+    const codesCell = element("td");
+    codesCell.colSpan = 4;
+    codesCell.append(stickerNumbers(group.codes));
+    codesRow.append(codesCell);
+    body.append(row, codesRow);
+    table.append(body);
+  }
+  sheet.replaceChildren(element("h1", "Лист подбора WB"),
+    element("p", [picking.supply, picking.date, "Всего " + picking.total + " шт."].filter(Boolean).join(" · ")), table);
+  window.print();
+});
+</script>
+</body>
+</html>
